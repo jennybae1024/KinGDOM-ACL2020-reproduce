@@ -3,16 +3,30 @@ import numpy as np
 import os.path, pickle
 from utils import obtain_all_seed_concepts
 from utils_graph import conceptnet_graph, domain_aggregated_graph, subgraph_for_concept
+import argparse
+
+pkl_path = '/media/disk1/jennybae/data/kingdom/pkl_files'
+
+filename={"conceptnet": "conceptnet_english.txt",
+          "wordnet18": "wordnet18.txt"}
 
 if __name__ == '__main__':
-    
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--kg_name', type=str, default='conceptnet')
+    parser.add_argument('--dataset_type', type=str, default='data2000')
+    args = parser.parse_args()
+    pkl_path = os.path.join(pkl_path, args.dataset_type, args.kg_name)
     bow_size = 5000
-    
+
+    if not os.path.exists(pkl_path):
+        os.makedirs(pkl_path)
+
     print ('Extracting seed concepts from all domains.')
-    all_seeds = obtain_all_seed_concepts(bow_size)
+    all_seeds = obtain_all_seed_concepts(bow_size, args.dataset_type)
     
     print ('Creating conceptnet graph.')
-    G, G_reverse, concept_map, relation_map = conceptnet_graph('conceptnet_english.txt')
+    G, G_reverse, concept_map, relation_map = conceptnet_graph(filename[args.kg_name])
     
     print ('Num seed concepts:', len(all_seeds))
     print ('Populating domain aggregated sub-graph with seed concept sub-graphs.')
@@ -34,12 +48,12 @@ if __name__ == '__main__':
         
     print ('Saving files.')
         
-    pickle.dump(all_seeds, open('utils/all_seeds.pkl', 'wb'))
-    pickle.dump(concept_map, open('utils/concept_map.pkl', 'wb'))
-    pickle.dump(relation_map, open('utils/relation_map.pkl', 'wb'))
-    pickle.dump(unique_nodes_mapping, open('utils/unique_nodes_mapping.pkl', 'wb'))
-    pickle.dump(word_index, open('utils/word_index.pkl', 'wb'))
-    pickle.dump(concept_graphs, open('utils/concept_graphs.pkl', 'wb'))
+    pickle.dump(all_seeds, open(os.path.join(pkl_path, 'all_seeds.pkl'), 'wb'))
+    pickle.dump(concept_map, open(os.path.join(pkl_path,'concept_map.pkl'), 'wb'))
+    pickle.dump(relation_map, open(os.path.join(pkl_path, 'relation_map.pkl'), 'wb'))
+    pickle.dump(unique_nodes_mapping, open(os.path.join(pkl_path, 'unique_nodes_mapping.pkl'), 'wb'))
+    pickle.dump(word_index, open(os.path.join(pkl_path, 'word_index.pkl'), 'wb'))
+    pickle.dump(concept_graphs, open(os.path.join(pkl_path, 'concept_graphs.pkl'), 'wb'))
     
-    np.ndarray.dump(triplets, open('utils/triplets.np', 'wb'))        
+    np.ndarray.dump(triplets, open(os.path.join(pkl_path, 'triplets.np'), 'wb'))
     print ('Completed.')

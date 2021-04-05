@@ -146,3 +146,17 @@ class RGCNConv(MessagePassing):
         return '{}({}, {}, num_relations={})'.format(
             self.__class__.__name__, self.in_channels, self.out_channels,
             self.num_relations)
+
+
+
+class mmRGCN(RGCN):
+    def forward(self, data):
+        entity, edge_index, edge_type, edge_norm = data.entity, data.edge_index, \
+                                                   data.edge_type, data.edge_norm
+        x = self.entity_embedding(entity)
+        x = self.conv1(x, edge_index, edge_type, edge_norm)
+        x = F.relu(self.conv1(x, edge_index, edge_type, edge_norm))
+        x = F.dropout(x, p=self.dropout_ratio, training=self.training)
+        x = self.conv2(x, edge_index, edge_type, edge_norm)
+
+        return x

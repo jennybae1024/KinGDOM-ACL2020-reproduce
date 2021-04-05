@@ -1,2 +1,5 @@
-
+*.ipynb
+*.sh
+*.json
+*.np
 .DS_Store

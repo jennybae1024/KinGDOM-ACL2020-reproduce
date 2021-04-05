@@ -1,3 +1,4 @@
+import os
 from tqdm import tqdm
 import numpy as np, networkx as nx, time
 
@@ -13,7 +14,7 @@ def conceptnet_graph(filename):
     """
     array = []
     concept_set, relation_set, concept_map, relation_map = set(), set(), {}, {}
-
+    filename = os.path.join('/media/disk1/jennybae/data/kingdom', filename)
     f = open(filename, 'r')
     for line in f:
         array.append(line[:-1].split('\t'))

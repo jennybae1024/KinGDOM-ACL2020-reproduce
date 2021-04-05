@@ -1,4 +1,5 @@
-import numpy as np, os, gc, argparse
+import numpy as np, os, gc, argparse, math
+from tqdm import tqdm
 import torch
 import torch.optim as optim
 from torch.nn import functional as F
@@ -6,12 +7,25 @@ from utils import get_dataset
 from models import LinearModel
 from sklearn.metrics import accuracy_score
 
+from torch.utils.tensorboard import SummaryWriter
+
+
 
 norm = {'booksdvd': 4.18, 'bookskitchen': 4.13, 'bookselectronics': 4.13,
         'electronicskitchen': 3.56, 'electronicsdvd': 4.18, 'electronicsbooks': 4.45,
         'kitchenbooks': 4.45, 'kitchenelectronics': 3.5, 'kitchendvd': 4.18,
         'dvdelectronics': 3.62, 'dvdkitchen': 3.62, 'dvdbooks': 4.45}
 
+
+sess_dir = '/media/disk1/jennybae/kingdom/sa_model'
+data_dir = '/media/disk1/jennybae/data/kingdom'
+
+filename={"conceptnet": "conceptnet_english.txt",
+          "wordnet18": "wordnet18.txt"}
+
+data_type2exp_type ={"data2000": "small",
+                     "data1000": "d1000",
+                     "data500": "d500"}
 
 def loss_ae(recon_x, x):
     dim = x.size(1)
@@ -26,6 +40,7 @@ def train_model(model, optimizer, loss_class, loss_domain, X_s1, X_s2, Y_s, X_t1
     labels1, labels2, labels3 = [], [], []
     
     permutation = torch.randperm(X_s.size(0))
+    # print(permutation.shape)
 
     for i in range(0, X_s.size(0), batch_size):
         
@@ -43,8 +58,8 @@ def train_model(model, optimizer, loss_class, loss_domain, X_s1, X_s2, Y_s, X_t1
         
         x_s1, x_s2, y_s, x_t1, x_t2 = X_s1[indices], X_s2[indices], Y_s[indices], X_t1[indices], X_t2[indices]
         
-        y_s_domain = torch.zeros(batch_size).long()
-        y_t_domain = torch.ones(batch_size).long()
+        y_s_domain = torch.zeros_like(permutation[i:i+batch_size]).long()
+        y_t_domain = torch.ones_like(permutation[i:i+batch_size]).long()
         
         if use_cuda:
             y_s_domain = y_s_domain.cuda()
@@ -97,7 +112,7 @@ def train_model(model, optimizer, loss_class, loss_domain, X_s1, X_s2, Y_s, X_t1
     #        a = avg_loss3, b = avg_loss5, c = avg_acc3))
         
         
-def eval_model(model, loss_class, loss_domain, X_t1, X_t2, Y_t):
+def eval_model(model, loss_class, loss_domain, X_t1, X_t2, Y_t, max_acc):
         
     model.eval()
     Y_t_domain = torch.ones(len(Y_t)).long()
@@ -122,7 +137,11 @@ def eval_model(model, loss_class, loss_domain, X_t1, X_t2, Y_t):
     
     # print ('Target sentiment loss: {a}, domain loss: {b}, recons loss: {c}, sentiment acc: {d}, domain acc: {e}'.format(
     #      a = loss1, b = loss2, c = loss3, d = avg_acc1, e = avg_acc2))
-    
+
+    if avg_acc1>max_acc:
+        np.savetxt(os.path.join(sess_path, 'output.txt'), preds1, fmt = '%2d', delimiter='\n')
+        np.savetxt(os.path.join(sess_path, 'label.txt'), labels1, fmt = '%2d', delimiter='\n')
+
     return avg_acc1, loss1
 
 
@@ -133,16 +152,26 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=40, metavar='BS', help='batch size')
     parser.add_argument('--epochs', type=int, default=100, metavar='E', help='number of epochs')
     parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
+    parser.add_argument('--model_type', type=str)
+    parser.add_argument('--dataset_type', type=str)
+    parser.add_argument('--kg_name', type=str, help="conceptnet or wordnet18")
+    parser.add_argument('--kg_seed_type', type=str, help="seed from dataXXXX")
+    parser.add_argument('--kg_size', type=int, default=30000)
+    parser.add_argument('--kg_corruption', type=bool, default=False)
+    parser.add_argument('--kg_corruption_rate', type=float, default=0.2)
+    parser.add_argument('--dropout', type=float)
+    parser.add_argument('--alpha', type=float)
     args = parser.parse_args()
     print(args)
 
     n_epochs = args.epochs
     batch_size = args.batch_size
     len_dataloader = 2000/batch_size
-
+    dr = args.dropout
+    al = args.alpha
     lr = args.lr
-    dropouts = [0.25, 0.5]
-    alphas = [1, 2]
+    # dropouts = [0.25, 0.5]
+    # alphas = [1, 2]
 
     bow_size = 5000
     graph_size = 100
@@ -170,19 +199,32 @@ if __name__ == '__main__':
         
             if d1 == d2:
                 continue
-        
+
             # BOW features and sentiment labels
-            X_s, Y_s, X_t1, Y_t1, X_t2, Y_t2, _ = get_dataset(d1, d2, max_words=bow_size)
-        
+            X_s, Y_s, X_t1, Y_t1, X_t2, Y_t2, _ = get_dataset(d1, d2, max_words=bow_size, exp_type=data_type2exp_type[args.dataset_type])
+
             Y_s = torch.LongTensor(Y_s)
             Y_t1 = torch.LongTensor(Y_t1)
             Y_t2 = torch.LongTensor(Y_t2)
-        
+
+            # graph_feat_path = os.path.join(data_dir, 'graph_features', args.dataset_type, args.kg_name)
+            # (sf, open(os.path.join(graph_feat_path, 'sf_' + domain + '_' + split + '_bow5000_kg{}k_cor{}.np'.format(
+            #                            int(args.kg_size / 1000), int(args.kg_corruption_rate * 10))), 'wb'))
+
+            if args.kg_corruption:
+                kg_spec = 'kg{}k_cor{}'.format(int(args.kg_size/1000), int(args.kg_corruption_rate*10))
+            else:
+                kg_spec = 'kg{}k'.format(int(args.kg_size/1000))
+
             # Graph features
-            X_s_ = np.load(open('graph_features/sf_' + d1 +'_small_5000.np', 'rb'), allow_pickle=True)
-            X_t1_ = np.load(open('graph_features/sf_' + d2 + '_small_5000.np', 'rb'), allow_pickle=True)
-            X_t2_ = np.load(open('graph_features/sf_'+ d2 + '_test_5000.np', 'rb'), allow_pickle=True)
-        
+            X_s_ = np.load(open(os.path.join(data_dir, 'graph_features', args.kg_seed_type, args.kg_name,
+                                     'sf_' + d1 +'_{}_bow5000_'.format(data_type2exp_type[args.kg_seed_type]) + kg_spec + ".np"), 'rb'), allow_pickle=True)
+            X_t1_ = np.load(open(os.path.join(data_dir, 'graph_features',  args.kg_seed_type, args.kg_name,
+                                     'sf_' + d2 + '_{}_bow5000_'.format(data_type2exp_type[args.kg_seed_type]) + kg_spec + ".np"), 'rb'), allow_pickle = True)
+
+            X_t2_ = np.load(open(os.path.join(data_dir, 'graph_features',  args.kg_seed_type, args.kg_name,
+                                    'sf_' + d2 + '_test_bow5000_' + kg_spec + ".np"), 'rb'), allow_pickle = True)
+
             if transform:
 
                 c = norm[d1+d2]
@@ -211,37 +253,59 @@ if __name__ == '__main__':
         
             all_accs = []
             maxa = 0
-        
-            for _ in range(2):
-                for dr in dropouts:
-                    for al in alphas:
-                        model = LinearModel(bow_size, graph_size, dr)
-                        if use_cuda:
-                            model = model.cuda()
-                        optimizer = optim.Adam(model.parameters(), lr=lr)
-                        for p in model.parameters():
-                            p.requires_grad = True
-                
-                        accs, loss = [], []
-                        for epoch in range(n_epochs):
-                            train_model(model, optimizer, loss_class, loss_domain, X_s, X_s_, Y_s, X_t1, X_t1_, al)
-                            acc, l = eval_model(model, loss_class, loss_domain, X_t2, X_t2_, Y_t2)
-                            accs.append(acc)
-                            loss.append(l)    
-                    
-                        max_acc = max(accs)
-                        all_accs.append(max_acc)
-                    
-                        del model, optimizer
-                        gc.collect()
-                    
-                        if max_acc > maxa:
-                            params = {'lr': lr, 'dr': dr, 'alpha': al}
-                            maxa = max_acc
-                            print ('Results: Acc: {a}, Loss: {b}, LR: {c}, Dropout: {d}, alpha: {e}'
-                                    .format(a = max_acc, b = loss[accs.index(max_acc)], c = lr, d = dr, e = al))
-                            
+
+
+            for iter_turn in range(5):
+                base_path = os.path.join(sess_dir, args.model_type, args.dataset_type,
+                                         '{}-{}'.format(d1, d2), args.kg_name+"_"+kg_spec)
+                sess_path = os.path.join(base_path, 'dr{}_al{}_lr{}/trial{}'.format(int(-math.log(dr,2)),
+                                                                            int(al), int(-math.log(lr, 10)), iter_turn))
+                # print(base_path)
+                # print(sess_path)
+                # 1/0
+                if not os.path.exists(sess_path):
+                    os.makedirs(sess_path)
+
+                writer = SummaryWriter(sess_path)
+
+                model = LinearModel(bow_size, graph_size, dr)
+                if use_cuda:
+                    model = model.cuda()
+                optimizer = optim.Adam(model.parameters(), lr=lr)
+                for p in model.parameters():
+                    p.requires_grad = True
+
+                accs, loss = [], []
+                max_acc = 0
+
+                for epoch in tqdm(range(1, (n_epochs+1)), desc='Epochs', position=0):
+                    train_model(model, optimizer, loss_class, loss_domain, X_s, X_s_, Y_s, X_t1, X_t1_, al)
+                    acc, l = eval_model(model, loss_class, loss_domain, X_t2, X_t2_, Y_t2, max_acc)
+                    max_acc = max(max_acc, acc)
+                    accs.append(acc)
+                    loss.append(l)
+                    writer.add_scalar("Loss/eval/sa_model/{}-{}".format(d1, d2), l, epoch)
+                    writer.add_scalar("Acc/eval/sa_model/{}-{}".format(d1, d2), acc, epoch)
+
+                all_accs.append(max_acc)
+
+                del model, optimizer
+                writer.close()
+
+                gc.collect()
+
+                # if max_acc > maxa:
+                params = {'lr': lr, 'dr': dr, 'alpha': al}
+                maxa = max_acc
+                print ('Results: Acc: {a}, Loss: {b}, LR: {c}, Dropout: {d}, alpha: {e}'
+                        .format(a = max_acc, b = loss[accs.index(max_acc)], c = lr, d = dr, e = al))
+                f = open(os.path.join(base_path, 'eval_summary.txt'), 'a')
+                f.write('Acc:{a}\tLoss:{b}\tLR:{c}\tDropout:{d}\talpha:{e}\n'
+                        .format(a = max_acc, b = loss[accs.index(max_acc)], c = lr, d = dr, e = al))
+                f.close()
+
             print (d1, d2, str(max(all_accs)))
-            print ('Best results at:', params)
+            # print ('Best results at:', params)
             print ('-'*70)
+            del maxa
             

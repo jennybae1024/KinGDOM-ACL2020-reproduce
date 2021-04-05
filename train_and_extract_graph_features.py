@@ -3,11 +3,22 @@ from utils_graph import unique_rows
 from utils import get_domain_dataset, spacy_seed_concepts_list
 import numpy as np, pickle, argparse
 
+import os
+import random
 import torch
 import torch.nn.functional as F
 from rgcn import RGCN
 from torch_scatter import scatter_add
 from torch_geometric.data import Data
+from torch.utils.tensorboard import SummaryWriter
+
+# graph_feat_dir = '/media/disk1/jennybae/data/kingdom/pkl_files'
+data_dir = '/media/disk1/jennybae/data/kingdom'
+sess_dir = '/media/disk1/jennybae/kingdom/gae'
+
+filename={"conceptnet": "conceptnet_english.txt",
+          "wordnet18": "wordnet18.txt"}
+
 
 def sample_edge_uniform(n_triples, sample_size):
     """Sample edges uniformly from all the edges."""
@@ -52,7 +63,7 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size, num_ent
     edges = triplets
     src, rel, dst = edges.transpose()
     uniq_entity, edges = np.unique((src, dst), return_inverse=True)
-    src, dst = np.reshape(edges, (2, -1))
+    src, dst = np.reshape(edges, (2, -1)) # unique node index in mini-batch
     relabeled_edges = np.stack((src, rel, dst)).transpose()
 
     # Negative sampling
@@ -79,6 +90,7 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size, num_ent
     data.entity = torch.from_numpy(uniq_entity)
     data.edge_type = edge_type
     data.edge_norm = edge_normalization(edge_type, edge_index, len(uniq_entity), num_rels)
+    # len(uniq_entity): subgraph 에서 다시 node labeling 을 했으므로 subgraph 에 한하여 normalization
     data.samples = torch.from_numpy(samples)
     data.labels = torch.from_numpy(labels)
 
@@ -112,7 +124,8 @@ def generate_graph(triplets, num_rels):
 
     return data
 
-def sentence_features(model, domain, split, all_seeds, concept_graphs, relation_map, unique_nodes_mapping):
+def sentence_features(model, domain, split, all_seeds, concept_graphs,
+                      relation_map, unique_nodes_mapping, args):
     """
         Graph features for each sentence (document) instance in a domain.
     """
@@ -138,13 +151,31 @@ def sentence_features(model, domain, split, all_seeds, concept_graphs, relation_
         
             xg[:, 0] = np.vectorize(unique_nodes_mapping.get)(xg[:, 0])
             xg[:, 2] = np.vectorize(unique_nodes_mapping.get)(xg[:, 2])
-            xg = unique_rows(xg).astype('int64')
-            if len(xg) > 50000:
-                xg = xg[:50000, :]
 
+            if args.kg_corruption:
+                corrupt_indicies = random.sample(range(len(xg)), k=int(len(xg) * args.kg_corruption_rate))
+                xg[corrupt_indicies, 2]  = random.choices(list(unique_nodes_mapping.values()),
+                                                          k=int(len(xg) * args.kg_corruption_rate))
+
+            xg = unique_rows(xg).astype('int64')
+            # print(len(xg))
+            # shuffle
+            np.random.shuffle(xg)
+            if len(xg) > args.kg_size:
+                xg = xg[:args.kg_size, :]
+
+            features = []
+            # if len(xg) > eval_batch_size:
+            #     for i in range(int(len(xg)/eval_batch_size)):
+            #         inputs = xg[i*eval_batch_size:(i+1)*eval_batch_size]
+            #         sg = generate_graph(inputs, len(relation_map)).to(torch.device('cuda'))
+            #         seg_feat = model(sg.entity, sg.edge_index, sg.edge_type, sg.edge_norm)
+            #         features.append(seg_feat.cpu().detach().numpy())
+            # features = np.concatenate(np.array(features))
+            # sent_features[j] = features.mean(axis=0)
             sg = generate_graph(xg, len(relation_map)).to(torch.device('cuda'))
             features = model(sg.entity, sg.edge_index, sg.edge_type, sg.edge_norm)
-            sent_features[j] = features.cpu().detach().numpy().mean(axis=0)            
+            sent_features[j] = features.cpu().detach().numpy().mean(axis=0)
             torch.cuda.empty_cache()
             
         except ValueError:
@@ -169,7 +200,7 @@ def train(train_triplets, model, batch_size, split_size, negative_sample, reg_ra
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch-size', type=int, default=50000, help='graph batch size')
+    parser.add_argument('--batch-size', type=int, default=5000, help='graph batch size')
     parser.add_argument('--split-size', type=float, default=0.5, help='what fraction of graph edges used in training')
     parser.add_argument('--ns', type=int, default=1, help='negative sampling ratio')
     parser.add_argument('--epochs', type=int, default=1500, help='number of epochs')
@@ -178,6 +209,15 @@ if __name__ == '__main__':
     parser.add_argument('--dropout', type=float, default=0.25, help='learning rate')
     parser.add_argument('--reg', type=float, default=1e-2, help='regularization coefficient')
     parser.add_argument('--grad-norm', type=float, default=1.0, help='grad norm')
+    parser.add_argument('--eval_only', action="store_true")
+    parser.add_argument('--dataset_type', type=str, default='data2000')
+    parser.add_argument('--eval_batch_size', type=int, default=1000)
+    parser.add_argument('--checkpoint', type=str, default=None)
+    parser.add_argument('--kg_name', type=str, default='conceptnet')
+    parser.add_argument('--kg_size', type=int, default=30000)
+    parser.add_argument('--kg_corruption', type=bool, default=False)
+    parser.add_argument('--kg_corruption_rate', type=float, default=0.2)
+
     args = parser.parse_args()
     print(args)
     
@@ -191,50 +231,82 @@ if __name__ == '__main__':
     regularization = args.reg
     grad_norm = args.grad_norm
 
-    all_seeds = pickle.load(open('utils/all_seeds.pkl', 'rb'))
-    relation_map = pickle.load(open('utils/relation_map.pkl', 'rb'))
-    unique_nodes_mapping = pickle.load(open('utils/unique_nodes_mapping.pkl', 'rb'))
-    concept_graphs = pickle.load(open('utils/concept_graphs.pkl', 'rb'))
-    train_triplets = np.load(open('utils/triplets.np', 'rb'), allow_pickle=True)
-    
+    pkl_path = os.path.join(data_dir, 'pkl_files', args.dataset_type, args.kg_name)
+    all_seeds = pickle.load(open(os.path.join(pkl_path, 'all_seeds.pkl'), 'rb'))
+    relation_map = pickle.load(open(os.path.join(pkl_path, 'relation_map.pkl'), 'rb'))
+    unique_nodes_mapping = pickle.load(open(os.path.join(pkl_path, 'unique_nodes_mapping.pkl'), 'rb'))
+    concept_graphs = pickle.load(open(os.path.join(pkl_path, 'concept_graphs.pkl'), 'rb'))
+    train_triplets = np.load(open(os.path.join(pkl_path, 'triplets.np'), 'rb'), allow_pickle=True)
+
     n_bases = 4
     model = RGCN(len(unique_nodes_mapping), len(relation_map), num_bases=n_bases, dropout=dropout).cuda()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    for epoch in tqdm(range(1, (n_epochs + 1)), desc='Epochs', position=0):
 
-        permutation = torch.randperm(len(train_triplets))
-        losses = []
+    sess_path = os.path.join(sess_dir, args.dataset_type, args.kg_name)
+    if not os.path.exists(sess_path):
+        os.makedirs(sess_path)
 
-        for i in range(0, len(train_triplets), graph_batch_size):
-            
-            model.train()
-            optimizer.zero_grad()
-            
-            indices = permutation[i:i+graph_batch_size]
+    if args.checkpoint:
+        model.load_state_dict(torch.load(args.checkpoint))
 
-            score, loss = train(train_triplets[indices], model, batch_size=len(indices), split_size=graph_split_size, 
-                                negative_sample=negative_sample, reg_ratio = regularization, 
-                                num_entities=len(unique_nodes_mapping), num_relations=len(relation_map))
-            
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_norm)
-            optimizer.step()
-            losses.append(loss.item())
+    writer = SummaryWriter(sess_path)
 
-        avg_loss = round(sum(losses)/len(losses), 4)
+    if not args.eval_only:
+        for epoch in tqdm(range(1, (n_epochs + 1)), desc='Epochs', position=0):
 
-        if epoch%save_every == 0:
-            tqdm.write("Epoch {} Train Loss: {}".format(epoch, avg_loss))
-            torch.save(model.state_dict(), 'weights/model_epoch' + str(epoch) +'.pt')
-            
+            permutation = torch.randperm(len(train_triplets))
+            losses = []
+
+            for i in range(0, len(train_triplets), graph_batch_size):
+
+                model.train()
+                optimizer.zero_grad()
+
+                indices = permutation[i:i+graph_batch_size]
+
+                score, loss = train(train_triplets[indices], model, batch_size=len(indices), split_size=graph_split_size,
+                                    negative_sample=negative_sample, reg_ratio = regularization,
+                                    num_entities=len(unique_nodes_mapping), num_relations=len(relation_map))
+
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_norm)
+                optimizer.step()
+                losses.append(loss.item())
+
+            avg_loss = round(sum(losses)/len(losses), 4)
+
+            writer.add_scalar("Loss/train", avg_loss, epoch)
+            if epoch%save_every == 0:
+                tqdm.write("Epoch {} Train Loss: {}".format(epoch, avg_loss))
+
+                torch.save(model.state_dict(), os.path.join(sess_path,
+                                                            'model_epoch' + str(epoch) +'.pt'))
+    writer.close()
     model.eval()
+
+    if args.dataset_type=="data2000":
+        splits = ['test', 'small']
+    elif args.dataset_type=="data1000":
+        splits = ['test', 'd1000']
+    elif args.dataset_type == "data500":
+        splits = ['test', 'd500']
 
     for domain in ['books', 'dvd', 'electronics', 'kitchen']:
         print ('Extracting features for', domain)
-        for split in ['test', 'small']:
-            sf = sentence_features(model, domain, split, all_seeds, concept_graphs, relation_map, unique_nodes_mapping)
-            np.ndarray.dump(sf, open('graph_features/sf_' + domain + '_' + split + '_5000.np', 'wb'))
+        for split in splits:
+            sf = sentence_features(model, domain, split, all_seeds, concept_graphs,
+                                   relation_map, unique_nodes_mapping, args)
+            graph_feat_path = os.path.join(data_dir, 'graph_features', args.dataset_type, args.kg_name)
+            if not os.path.exists(graph_feat_path):
+                os.makedirs(graph_feat_path)
+            if args.kg_corruption:
+                np.ndarray.dump(sf, open(os.path.join(graph_feat_path,
+                                                      'sf_' + domain + '_' + split + '_bow5000_kg{}k_cor{}.np'.format(
+                                                          int(args.kg_size / 1000), int(args.kg_corruption_rate*10))), 'wb'))
+            else:
+                np.ndarray.dump(sf, open(os.path.join(graph_feat_path, 'sf_'+ domain + '_' + split +
+                                                      '_bow5000_kg{}k.np'.format(int(args.kg_size/1000))), 'wb'))
 
     print ('Done.')
     

@@ -84,9 +84,13 @@ def count_list_to_sparse_matrix(X_list, dico):
 
 
 def get_dataset_path(domain_name, exp_type):
-    prefix ='./dataset/'
+    prefix ='/media/disk1/jennybae/data/kingdom/'
     if exp_type == 'small':
         fname = 'labelled.review'
+    elif exp_type == "d1000":
+        fname = 'labelled_1000.review'
+    elif exp_type == "d500":
+        fname = 'labelled_500.review'
     elif exp_type == 'all':
         fname = 'all.review'
     elif exp_type == 'test':
@@ -109,12 +113,12 @@ def get_domain_dataset(domain_name, max_words=5000, exp_type='small'):
     return X_s, dico
 
 
-def get_dataset(source_name, target_name, max_words=5000):
+def get_dataset(source_name, target_name, max_words=5000, exp_type="small"):
     """
     Returns source domain, target domain paired dataset
     """
-    source_path  = get_dataset_path(source_name, 'small')
-    target_path1 = get_dataset_path(target_name, 'small')
+    source_path  = get_dataset_path(source_name, exp_type)
+    target_path1 = get_dataset_path(target_name, exp_type)
     target_path2 = get_dataset_path(target_name, 'test')
 
     dataset_list = [source_path, target_path1, target_path2]
@@ -179,14 +183,21 @@ def spacy_seed_concepts_list(concepts):
     return set(seeds)
 
 
-def obtain_all_seed_concepts(max_words):
+def obtain_all_seed_concepts(max_words, dataset_type="data2000"):
     """
     Returns seed concepts drwan from all the domains
     """
-    _, dico1 = get_domain_dataset('dvd', max_words)
-    _, dico2 = get_domain_dataset('electronics', max_words)
-    _, dico3 = get_domain_dataset('kitchen', max_words)
-    _, dico4 = get_domain_dataset('books', max_words)
+    if dataset_type=="data2000":
+        exp_type="small"
+    elif dataset_type=="data1000":
+        exp_type="d1000"
+    elif dataset_type=="data500":
+        exp_type="d500"
+
+    _, dico1 = get_domain_dataset('dvd', max_words, exp_type)
+    _, dico2 = get_domain_dataset('electronics', max_words, exp_type)
+    _, dico3 = get_domain_dataset('kitchen', max_words, exp_type)
+    _, dico4 = get_domain_dataset('books', max_words, exp_type)
     
     concepts = list(set(dico1.values())\
                 .union(set(dico2.values()))\

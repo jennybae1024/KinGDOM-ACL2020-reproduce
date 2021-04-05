@@ -1,1 +1,0 @@
-Model weights will be stored here.

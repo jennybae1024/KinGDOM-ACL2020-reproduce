@@ -33,7 +33,7 @@ def conceptnet_graph(filename):
 
     time.sleep(0.1)
 
-    for x in tqdm(array):
+    for x in array:
         G.add_edges_from([(x[0], x[1])], label=x[2])
         G_reverse.add_edges_from([(x[1], x[0])], label=x[2])
         

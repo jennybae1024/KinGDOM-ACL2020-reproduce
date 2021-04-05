@@ -143,7 +143,7 @@ def spacy_seed_concepts(dico):
     concepts = list(dico.values())
     tags = ['PROPN', 'NOUN', 'ADJ', 'ADV']
 
-    for item in tqdm(concepts):
+    for item in concepts:
         if '_' not in item:
             doc = nlp(item)
             switch = 0
@@ -212,3 +212,24 @@ def obtain_all_seed_concepts(max_words, dataset_type="data2000"):
     all_seeds = list(seeds1.union(seeds2).union(seeds3).union(seeds4))
     
     return all_seeds
+
+def obtain_seed_concepts_from_st_domains(s_domain, t_domain, max_words, dataset_type="data2000"):
+    if dataset_type == "data2000":
+        exp_type = "small"
+    elif dataset_type == "data1000":
+        exp_type = "d1000"
+    elif dataset_type == "data500":
+        exp_type = "d500"
+
+    _, dico1 = get_domain_dataset(s_domain, max_words, exp_type)
+    _, dico2 = get_domain_dataset(t_domain, max_words, exp_type)
+
+    concepts = list(set(dico1.values()) \
+                    .union(set(dico2.values())))
+
+    seeds1 = spacy_seed_concepts(dico1)
+    seeds2 = spacy_seed_concepts(dico2)
+
+    union_seeds = list(seeds1.union(seeds2))
+
+    return union_seeds

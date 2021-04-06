@@ -74,7 +74,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--no-cuda', action='store_true', default=False, help='does not use GPU')
-    parser.add_argument('--batch-size', type=int, default=2, metavar='BS', help='batch size')
+    parser.add_argument('--batch-size', type=int, default=4, metavar='BS', help='batch size')
     parser.add_argument('--eval_batch_size', type=int, default=1, metavar='BS', help='batch size')
     parser.add_argument('--epochs', type=int, default=100, metavar='E', help='number of epochs')
     parser.add_argument('--lr', type=float, default=1e-4, metavar='LR', help='learning rate')
@@ -82,7 +82,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_type', type=str)
     parser.add_argument('--source_domain', type=str)
     parser.add_argument('--target_domain', type=str)
-    parser.add_argument('--save', type=int, default=20)
+    parser.add_argument('--save', type=int, default=100)
     parser.add_argument('--eval_only', action="store_true")
     parser.add_argument('--kg_name', type=str, help="conceptnet or wordnet18")
     parser.add_argument('--kg_seed_type', type=str, help="seed from dataXXXX")
@@ -90,6 +90,7 @@ if __name__ == '__main__':
     parser.add_argument('--kg_corruption', type=bool, default=False)
     parser.add_argument('--kg_corruption_rate', type=float, default=0.2)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=16)
+    parser.add_argument('--grad-norm', type=float, default=1.0, help='grad norm')
     parser.add_argument('--dropout', type=float)
     parser.add_argument('--alpha', type=float)
     args = parser.parse_args()
@@ -98,6 +99,7 @@ if __name__ == '__main__':
     n_epochs = args.epochs
     batch_size = args.batch_size
     len_dataloader = 2000/batch_size
+    grad_norm = args.grad_norm
     dr = args.dropout
     al = args.alpha
     lr = args.lr
@@ -154,7 +156,7 @@ if __name__ == '__main__':
 
 
     if not args.eval_only:
-        for iter_turn in range(3):
+        for iter_turn in range(1):
             base_path = os.path.join(sess_path, args.model_type, args.dataset_type,
                                      '{}-{}'.format(args.source_domain, args.target_domain), args.kg_name + "_" + kg_spec)
             sess_path = os.path.join(base_path, 'dr{}_al{}_lr{}/trial{}'.format(int(-math.log(dr, 2)),
@@ -176,8 +178,6 @@ if __name__ == '__main__':
                 local_step = 0
                 for step, batch in enumerate(tqdm(train_dataloader)):
                     model.train()
-                    optimizer.zero_grad()
-
                     batch.to(torch.device('cuda'))
                     # x_s1, y_s, x_t1, gr, source_nodes, target_nodes = batch
                     # x_s1, y_s, x_t1 = x_s1.cuda(), y_s.cuda(), x_t1.cuda()
@@ -215,13 +215,15 @@ if __name__ == '__main__':
                     loss = (sa_loss + gae_loss)/args.gradient_accumulation_steps
                     tr_loss += loss.item()
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_norm)
 
-                    if (step+1 % args.gradient_accumulation_steps) == 0:
+                    if (step+1) % args.gradient_accumulation_steps == 0:
                         optimizer.step()
                         optimizer.zero_grad()
                         global_step += 1
                         local_step += 1
-                        tqdm.write("Steps {} Train Loss: {}".format(global_step, tr_loss/local_step))
+                    if (step + 1) % args.save == 0:
+                        tqdm.write("Steps {} Train Loss: {}".format(global_step, round(tr_loss/local_step,2)))
                         writer.add_scalar("Loss/train/e2e_model/{}-{}".format(args.source_domain, args.target_domain),
                                                                             tr_loss/local_step, global_step)
 

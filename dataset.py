@@ -60,7 +60,7 @@ def generate_sampled_graph_and_labels(triplets, sample_size, split_size, num_ent
 
         # further split graph, only half of the edges will be used as graph
         # structure, while the rest half is used as unseen positive samples
-        split_size = int(sample_size * split_size)
+        split_size = min(int(sample_size * split_size), int(len(triplets)*split_size))
         graph_split_ids = np.random.choice(np.arange(len(triplets)),
                                            size=split_size, replace=False)
 
@@ -200,6 +200,12 @@ class TrainDataset(torch.utils.data.Dataset):
         self.concept_graphs = concept_graphs
         print("Create conceptnet graph. Num seed concpets:", len(seeds))
 
+    def concat_or_none(self, data):
+        if len(data)>0:
+            return np.concatenate(data)
+        else:
+            return np.array([])
+
     def __len__(self):
         return len(self.X_s)
 
@@ -236,11 +242,16 @@ class TrainDataset(torch.utils.data.Dataset):
 
         x_s1, y_s, x_t1, x_t2 = self.X_s[idx], self.Y_s[idx], self.X_t1[idx], self.X_t2[idx]
 
+
+        source_node = [np.where(uniq_entity==self.unique_nodes_mapping[self.concept_map[item]])[0]
+                                                  for item in s_n if item in self.concept_map]
+        target_node = [np.where(uniq_entity==self.unique_nodes_mapping[self.concept_map[item]])[0]
+                                                  for item in t_n if item in self.concept_map]
+
+
         feature = {'graph_data': graph_data,
-                   'source_node': np.concatenate([np.where(uniq_entity==self.unique_nodes_mapping[self.concept_map[item]])[0]
-                                                  for item in s_n if item in self.concept_map]),
-                   'target_node':  np.concatenate([np.where(uniq_entity==self.unique_nodes_mapping[self.concept_map[item]])[0]
-                                                  for item in t_n if item in self.concept_map]),
+                   'source_node': self.concat_or_none(source_node),
+                   'target_node': self.concat_or_none(target_node),
                    'source_bow': x_s1,
                    'source_label': y_s,
                    'target_bow': x_t1}
@@ -297,6 +308,7 @@ class EvalDataset(TrainDataset):
                                                                         num_rels=len(self.relation_map),
                                                                         negative_rate=1)
             target_node = np.array([])
+
         return  {'graph_data': graph_data,
                    'target_node': target_node,
                    'target_bow': x_t2,
